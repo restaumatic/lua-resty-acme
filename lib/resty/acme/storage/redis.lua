@@ -1,32 +1,33 @@
-local redis = require "resty.redis"
-local util = require "resty.acme.util"
-local fmt   = string.format
-local log   = util.log
+local redis   = require "resty.redis"
+local util    = require "resty.acme.util"
+local fmt     = string.format
+local log     = util.log
 local ngx_ERR = ngx.ERR
-local unpack = unpack
+local unpack  = unpack
 
-local _M = {}
-local mt = {__index = _M}
+local _M      = {}
+local mt      = { __index = _M }
 
 function _M.new(conf)
   conf = conf or {}
   local self =
-    setmetatable(
-    {
-      host = conf.host or '127.0.0.1',
-      port = conf.port or 6379,
-      database = conf.database,
-      auth = conf.auth,
-      ssl = conf.ssl or false,
-      ssl_verify = conf.ssl_verify or false,
-      ssl_server_name = conf.ssl_server_name,
-      namespace = conf.namespace or "",
-      scan_count = conf.scan_count or 10,
-      username = conf.username,
-      password = conf.password,
-    },
-    mt
-  )
+      setmetatable(
+        {
+          host = conf.host or '127.0.0.1',
+          port = conf.port or 6379,
+          database = conf.database,
+          auth = conf.auth,
+          ssl = conf.ssl or false,
+          ssl_verify = conf.ssl_verify or false,
+          ssl_server_name = conf.ssl_server_name,
+          namespace = conf.namespace or "",
+          scan_count = conf.scan_count or 10,
+          username = conf.username,
+          password = conf.password,
+          pool_size = conf.pool_size or 1,
+        },
+        mt
+      )
   return self, nil
 end
 
@@ -86,7 +87,7 @@ local function remove_namespace(namespace, keys)
         keys[k] = v:sub(start)
       else
         local msg = fmt("found a key '%s', expected to be prefixed with namespace '%s'",
-                        v, namespace)
+          v, namespace)
         log(ngx_ERR, msg)
       end
     end
@@ -159,10 +160,9 @@ function _M:list(prefix)
     local keys
     cursor, keys = unpack(res)
 
-    for i=1,#keys do
-      data[#data+1] = keys[i]
+    for i = 1, #keys do
+      data[#data + 1] = keys[i]
     end
-
   until cursor == "0"
 
   return remove_namespace(self.namespace, data), err
