@@ -1,3 +1,5 @@
+-- luacheck: globals ngx.run_worker_thread
+
 local reverse = string.reverse
 local find = string.find
 local sub = string.sub
