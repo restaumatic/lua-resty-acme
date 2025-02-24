@@ -92,7 +92,7 @@ local function create_csr(domain_pkey, ...)
 end
 
 local function create_pkey(bits, typ, curve)
-  local ok, result_or_err = ngx.run_worker_thread('create_pkey', 'resty.acme.util', 'create_pkey_sync', bits, type)
+  local ok, result_or_err = ngx.run_worker_thread('create_pkey', 'resty.acme.util', 'create_pkey_sync', bits, typ, curve)
   if not ok then
     ngx.log(ngx.ERR, "create_pkey: failed to run worker thread: ", result_or_err)
     return nil, result_or_err
