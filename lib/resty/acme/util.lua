@@ -92,7 +92,7 @@ end
 local function create_pkey(bits, typ, curve)
   local ok, result_or_err = ngx.run_worker_thread('create_pkey', 'resty.acme.util', 'create_pkey_sync', bits, type)
   if not ok then
-    ngx_log(ngx_ERR, "create_pkey: failed to run worker thread: ", result_or_err)
+    ngx.log(ngx.ERR, "create_pkey: failed to run worker thread: ", result_or_err)
     return nil, result_or_err
   end
   return result_or_err
