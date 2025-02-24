@@ -204,12 +204,17 @@ local function update_cert_handler(data)
 
   if not pkey then
     local t = ngx.now()
+    local err
     if typ == 'rsa' then
-      pkey = util.create_pkey(4096, 'RSA')
+      pkey, err = util.create_pkey(4096, 'RSA')
     elseif typ == 'ecc' then
-      pkey = util.create_pkey(nil, 'EC', 'prime256v1')
+      pkey, err = util.create_pkey(nil, 'EC', 'prime256v1')
     else
       return "unknown key type: " .. typ
+    end
+    if not pkey then
+      log(ngx_ERR, "error creating new ", typ, " private key for ", domain, ": ", err)
+      return err
     end
     ngx.update_time()
     log(ngx_INFO, ngx.now() - t,  "s spent in creating new ", typ, " private key")
@@ -456,7 +461,11 @@ function AUTOSSL.init(autossl_config, acme_config)
   else
     -- We always generate a key here incase there isn't already one in storage
     -- that way a consistent one can be shared across all workers
-    AUTOSSL.generated_account_key = AUTOSSL.create_account_key()
+    local key, err = AUTOSSL.create_account_key()
+    if not key then
+      error("failed to create account key: " .. err)
+    end
+    AUTOSSL.generated_account_key = key
   end
 
   if autossl_config.staging then
@@ -676,10 +685,10 @@ end
 
 function AUTOSSL.create_account_key()
   local t = ngx.now()
-  local pkey = util.create_pkey(4096, 'RSA')
+  local pkey, err = util.create_pkey(4096, 'RSA')
   ngx.update_time()
   log(ngx_INFO, ngx.now() - t,  "s spent in creating new account key")
-  return pkey
+  return pkey, err
 end
 
 function AUTOSSL.load_account_key_storage()

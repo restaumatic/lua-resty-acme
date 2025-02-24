@@ -90,6 +90,15 @@ local function create_csr(domain_pkey, ...)
 end
 
 local function create_pkey(bits, typ, curve)
+  local ok, result_or_err = ngx.run_worker_thread('create_pkey', 'resty.acme.util', 'create_pkey_sync', bits, type)
+  if not ok then
+    ngx_log(ngx_ERR, "create_pkey: failed to run worker thread: ", result_or_err)
+    return nil, result_or_err
+  end
+  return result_or_err
+end
+
+local function create_pkey_sync(bits, typ, curve)
   bits = bits or 4096
   typ = typ or 'RSA'
   local pkey = openssl.pkey.new({
@@ -179,6 +188,7 @@ return {
     thumbprint = thumbprint,
     create_csr = create_csr,
     create_pkey = create_pkey,
+    create_pkey_sync = create_pkey_sync,
     check_chain_root_issuer = check_chain_root_issuer,
     log = log,
 }
