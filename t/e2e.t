@@ -89,6 +89,8 @@ sub ::make_main_config{
     my ($key_types, $key_path, $challenges) = @_;
     my $common_config = make_http_config($key_types, $key_path, $challenges, "acme_stream", "file");
     return qq{
+        thread_pool create_pkey threads=1;
+
         stream {
             $common_config
 
@@ -125,6 +127,8 @@ run_tests();
 
 __DATA__
 === TEST 1: http-01 challenge
+--- main_config
+    thread_pool create_pkey threads=1;
 --- http_config eval: ::make_http_config("'rsa'", "/tmp/account.key", "'http-01'")
 --- config
     listen 5002;
@@ -175,6 +179,8 @@ __DATA__
 [error]
 
 === TEST 2: http-01 challenge with RSA + ECC dual certs
+--- main_config
+    thread_pool create_pkey threads=1;
 --- http_config eval: ::make_http_config("'rsa', 'ecc'", "/tmp/account.key", "'http-01'")
 --- config
     listen 5002;
@@ -284,6 +290,8 @@ set ecc key
 [error]
 
 === TEST 4: blocking mode
+--- main_config
+    thread_pool create_pkey threads=1;
 --- http_config eval: ::make_http_config("'rsa'", "/tmp/account.key", "'http-01'", "acme", "file", "true")
 --- config
     listen 5002;
