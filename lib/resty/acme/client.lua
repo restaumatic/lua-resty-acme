@@ -23,7 +23,7 @@ local wait_backoff_series = {1, 1, 2, 3, 5, 8, 13, 21}
 local TEST_TRY_NONCE_INFINITELY = not not os.getenv("TEST_TRY_NONCE_INFINITELY")
 
 local _M = {
-  _VERSION = '0.15.0'
+  _VERSION = '0.16.0'
 }
 local mt = {__index = _M}
 
@@ -575,7 +575,7 @@ function _M:order_certificate(domain_key, ...)
     end
     for _, challenge in ipairs(challenges.challenges) do
       local typ = challenge.type
-      if challenge.status ~= 'pending' then
+      if challenge.status ~= 'pending' and challenge.status ~= 'processing' then
         if challenge.status == 'valid' then
           has_valid_challenge = true
         end
