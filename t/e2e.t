@@ -109,6 +109,7 @@ sub ::make_main_config{
                     listen 5201 ssl;
                     ssl_certificate /tmp/default.pem;
                     ssl_certificate_key /tmp/default.key;
+                    ssl_alpn acme-tls/1;
 
                     ssl_certificate_by_lua_block {
                         require("resty.acme.autossl").serve_tls_alpn_challenge()
