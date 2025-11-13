@@ -34,6 +34,9 @@ local default_config = {
   -- the private key algorithm to use, can be one or both of
   -- 'rsa' and 'ecc'
   domain_key_types = { 'rsa' },
+  -- function to select certificate types per domain
+  -- must return a subset of domain_key_types or nil
+  domain_key_types_for_domain = nil,
   -- restrict registering new cert only with domain defined in this table
   domain_whitelist = nil,
   -- restrict registering new cert only with domain checked by this function
@@ -77,6 +80,7 @@ local domain_pkeys = {}
 local domain_key_types, domain_key_types_count
 local domain_whitelist, domain_whitelist_callback, domain_wildcard_matcher
 local failure_cooloff_callback
+local domain_key_types_for_domain_callback
 
 --[[
   certs_cache = {
@@ -425,6 +429,52 @@ local function build_domain_wildcard_matcher(domains)
   })
 end
 
+local function get_domain_key_types(domain)
+  -- Return global domain_key_types if no callback is configured
+  if not domain_key_types_for_domain_callback then
+    return domain_key_types
+  end
+
+  -- Call the callback with the domain name
+  local per_domain_types = domain_key_types_for_domain_callback(domain)
+
+  -- Handle nil return - use global types as default
+  if per_domain_types == nil then
+    return domain_key_types
+  end
+
+  -- Non-table or empty table are errors
+  if type(per_domain_types) ~= "table" then
+    log(ngx_ERR, "domain_key_types_for_domain returned invalid type '", type(per_domain_types),
+        "' for domain ", domain, ", must return table or nil, falling back to global types")
+    return domain_key_types
+  end
+
+  if #per_domain_types == 0 then
+    log(ngx_ERR, "domain_key_types_for_domain returned empty table for domain ", domain,
+        ", must return non-empty table or nil, falling back to global types")
+    return domain_key_types
+  end
+
+  -- Validate that all returned types exist in global domain_key_types
+  local global_types_map = {}
+  for _, typ in ipairs(domain_key_types) do
+    global_types_map[typ] = true
+  end
+
+  for _, typ in ipairs(per_domain_types) do
+    if not global_types_map[typ] then
+      log(ngx_ERR, "domain_key_types_for_domain returned invalid type '", typ, 
+          "' for domain ", domain, ", must be subset of global domain_key_types, ",
+          "falling back to global types")
+      return domain_key_types
+    end
+  end
+
+  -- Return validated per-domain types
+  return per_domain_types
+end
+
 function AUTOSSL.init(autossl_config, acme_config)
   autossl_config = setmetatable(autossl_config or {}, { __index = default_config })
 
@@ -519,6 +569,11 @@ function AUTOSSL.init(autossl_config, acme_config)
   if not autossl_config.failure_cooloff and not failure_cooloff_callback then
     ngx.log(ngx.WARN, "neither failure_cooloff or failure_cooloff_callback is defined, ",
                       "any certificate failure will not cooloff which may trigger ACME API limits")
+  end
+
+  domain_key_types_for_domain_callback = autossl_config.domain_key_types_for_domain
+  if domain_key_types_for_domain_callback and type(domain_key_types_for_domain_callback) ~= "function" then
+    error("domain_key_types_for_domain must be a function, got " .. type(domain_key_types_for_domain_callback))
   end
 
   for _, typ in ipairs(domain_key_types) do
@@ -727,6 +782,11 @@ function AUTOSSL.get_certkey(domain, typ)
   end
 
   return get_certkey(domain, typ or "rsa")
+end
+
+-- test helper function to expose get_domain_key_types for unit testing
+function AUTOSSL._test_get_domain_key_types(domain)
+  return get_domain_key_types(domain)
 end
 
 return AUTOSSL
