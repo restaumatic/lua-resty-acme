@@ -5,6 +5,7 @@
 - **client:** fix detection of processing state
 
 ### features
+- **autossl:** add per-domain certificate type selection via domain_key_types_for_domain callback
 - **storage/redis:** use atomic set ([#105](https://github.com/fffonion/lua-resty-acme/issues/105))
 
 

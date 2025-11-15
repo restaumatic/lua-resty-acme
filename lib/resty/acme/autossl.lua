@@ -773,7 +773,15 @@ function AUTOSSL.ssl_certificate()
             -- in blocking mode we can try to use the cert right away
             certs_cache[typ]:delete(domain)
             local certkey, err = get_certkey_parsed(domain, typ)
-            if certkey and certkey ~= null then
+            if err then
+              log(ngx_ERR, "can't read key and cert from storage ", err)
+            elseif certkey == null then
+              log(ngx_DEBUG, "negative cached domain cert")
+            elseif certkey then
+              if chains_set_count == 0 then
+                ssl.clear_certs()
+              end
+              chains_set_count = chains_set_count + 1
               -- Find the global index for this type
               local global_index = nil
               for j, global_typ in ipairs(domain_key_types) do
@@ -782,7 +790,11 @@ function AUTOSSL.ssl_certificate()
                   break
                 end
               end
-              serve_cert(typ, global_index)
+              chains_set[global_index] = true
+
+              log(ngx_DEBUG, "set ", typ, " key for domain ", domain)
+              ssl.set_cert(certkey.cert)
+              ssl.set_priv_key(certkey.pkey)
             end
           end
         end
