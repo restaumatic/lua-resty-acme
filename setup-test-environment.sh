@@ -316,7 +316,7 @@ echo ""
 echo "Step 9: Setting up Redis services..."
 if ! docker ps | grep -q redis-test; then
     echo "Starting Redis on port 6379..."
-    docker run -d --name redis-test -p 6379:6379 \
+    docker run --rm -d --name redis-test -p 6379:6379 \
         --health-cmd "redis-cli ping" \
         --health-interval 10s \
         --health-timeout 5s \
@@ -328,7 +328,7 @@ fi
 
 if ! docker ps | grep -q redis-auth-test; then
     echo "Starting Redis with auth on port 6380..."
-    docker run -d --name redis-auth-test -p 6380:6379 \
+    docker run --rm -d --name redis-auth-test -p 6380:6379 \
         --health-cmd "redis-cli ping" \
         --health-interval 10s \
         --health-timeout 5s \
