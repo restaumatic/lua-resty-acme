@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -eo pipefail
 
 # Get the script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -42,9 +42,10 @@ echo ""
 echo "Step 2: Cleaning up old nginx processes..."
 pkill -9 nginx || echo "no nginx processes found"
 
-# Wait a moment for services to be ready
-echo "Waiting for services to be ready..."
-sleep 2
+
+echo "Step 2.5: Cleaning redis..."
+echo -ne "FLUSHALL\r\n" | nc -q1 localhost 6379
+echo -ne "AUTH passdefault\r\nFLUSHALL\r\n" | nc -q1 localhost 6380
 
 # Run tests
 echo ""

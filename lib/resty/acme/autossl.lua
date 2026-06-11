@@ -34,6 +34,9 @@ local default_config = {
   -- the private key algorithm to use, can be one or both of
   -- 'rsa' and 'ecc'
   domain_key_types = { 'rsa' },
+  -- function to select certificate types per domain
+  -- must return a subset of domain_key_types or nil
+  domain_key_types_for_domain = nil,
   -- restrict registering new cert only with domain defined in this table
   domain_whitelist = nil,
   -- restrict registering new cert only with domain checked by this function
@@ -77,6 +80,7 @@ local domain_pkeys = {}
 local domain_key_types, domain_key_types_count
 local domain_whitelist, domain_whitelist_callback, domain_wildcard_matcher
 local failure_cooloff_callback
+local domain_key_types_for_domain_callback
 
 --[[
   certs_cache = {
@@ -425,6 +429,52 @@ local function build_domain_wildcard_matcher(domains)
   })
 end
 
+local function get_domain_key_types(domain)
+  -- Return global domain_key_types if no callback is configured
+  if not domain_key_types_for_domain_callback then
+    return domain_key_types
+  end
+
+  -- Call the callback with the domain name
+  local per_domain_types = domain_key_types_for_domain_callback(domain)
+
+  -- Handle nil return - use global types as default
+  if per_domain_types == nil then
+    return domain_key_types
+  end
+
+  -- Non-table or empty table are errors
+  if type(per_domain_types) ~= "table" then
+    log(ngx_ERR, "domain_key_types_for_domain returned invalid type '", type(per_domain_types),
+        "' for domain ", domain, ", must return table or nil, falling back to global types")
+    return domain_key_types
+  end
+
+  if #per_domain_types == 0 then
+    log(ngx_ERR, "domain_key_types_for_domain returned empty table for domain ", domain,
+        ", must return non-empty table or nil, falling back to global types")
+    return domain_key_types
+  end
+
+  -- Validate that all returned types exist in global domain_key_types
+  local global_types_map = {}
+  for _, typ in ipairs(domain_key_types) do
+    global_types_map[typ] = true
+  end
+
+  for _, typ in ipairs(per_domain_types) do
+    if not global_types_map[typ] then
+      log(ngx_ERR, "domain_key_types_for_domain returned invalid type '", typ, 
+          "' for domain ", domain, ", must be subset of global domain_key_types, ",
+          "falling back to global types")
+      return domain_key_types
+    end
+  end
+
+  -- Return validated per-domain types
+  return per_domain_types
+end
+
 function AUTOSSL.init(autossl_config, acme_config)
   autossl_config = setmetatable(autossl_config or {}, { __index = default_config })
 
@@ -519,6 +569,11 @@ function AUTOSSL.init(autossl_config, acme_config)
   if not autossl_config.failure_cooloff and not failure_cooloff_callback then
     ngx.log(ngx.WARN, "neither failure_cooloff or failure_cooloff_callback is defined, ",
                       "any certificate failure will not cooloff which may trigger ACME API limits")
+  end
+
+  domain_key_types_for_domain_callback = autossl_config.domain_key_types_for_domain
+  if domain_key_types_for_domain_callback and type(domain_key_types_for_domain_callback) ~= "function" then
+    error("domain_key_types_for_domain must be a function, got " .. type(domain_key_types_for_domain_callback))
   end
 
   for _, typ in ipairs(domain_key_types) do
@@ -627,36 +682,84 @@ function AUTOSSL.ssl_certificate()
 
   end
 
+  -- Phase 1: Lookup all global types from storage
+  local certs_lookup = {}
+  for _, typ in ipairs(domain_key_types) do
+    local certkey, err = get_certkey_parsed(domain, typ)
+    certs_lookup[typ] = {
+      certkey = certkey,
+      err = err,
+      served = false
+    }
+  end
+
+  -- Phase 2: Get domain preferences
+  local preferred_types = get_domain_key_types(domain)
+
+  -- Phase 3 & 4: Serve certificates
   local chains_set_count = 0
   local chains_set = {}
 
-  local get_cert_inline = function(i, typ)
-    local certkey, err = get_certkey_parsed(domain, typ)
-    if err then
-      log(ngx_ERR, "can't read key and cert from storage ", err)
-    elseif certkey == null then
-      log(ngx_DEBUG, "negative cached domain cert")
-    elseif certkey then
+  local serve_cert = function(typ, typ_index)
+    local cert_info = certs_lookup[typ]
+    if not cert_info then
+      return
+    end
+
+    if cert_info.served then
+      return
+    end
+
+    if cert_info.err then
+      log(ngx_ERR, "can't read key and cert from storage ", cert_info.err)
+      return
+    end
+
+    if cert_info.certkey == null then
+      log(ngx_DEBUG, "negative cached domain cert for type ", typ)
+      return
+    end
+
+    if cert_info.certkey then
       if chains_set_count == 0 then
         ssl.clear_certs()
-        chains_set_count = chains_set_count + 1
       end
-      chains_set[i] = true
+      chains_set_count = chains_set_count + 1
+      chains_set[typ_index] = true
+      cert_info.served = true
 
       log(ngx_DEBUG, "set ", typ, " key for domain ", domain)
-      ssl.set_cert(certkey.cert)
-      ssl.set_priv_key(certkey.pkey)
+      ssl.set_cert(cert_info.certkey.cert)
+      ssl.set_priv_key(cert_info.certkey.pkey)
     end
   end
 
-  for i, typ in ipairs(domain_key_types) do
-    get_cert_inline(i, typ)
+  -- Phase 3: Serve preferred types first
+  for i, typ in ipairs(preferred_types) do
+    -- Find the index in global domain_key_types for chains_set tracking
+    local global_index = nil
+    for j, global_typ in ipairs(domain_key_types) do
+      if global_typ == typ then
+        global_index = j
+        break
+      end
+    end
+    serve_cert(typ, global_index)
   end
 
-  if domain_key_types_count ~= chains_set then
+  -- Phase 4: Serve remaining types (fallback)
+  for i, typ in ipairs(domain_key_types) do
+    serve_cert(typ, i)
+  end
+
+  -- Generate missing certificates for preferred types only
+  local preferred_types_count = #preferred_types
+  if preferred_types_count ~= chains_set_count then
     local update_cert_loop = function()
-      for i, typ in ipairs(domain_key_types) do
-        if not chains_set[i] then
+      -- Only generate certs for missing preferred types
+      for _, typ in ipairs(preferred_types) do
+        local cert_info = certs_lookup[typ]
+        if cert_info and not cert_info.served then
           local err = AUTOSSL.update_cert({
             domain = domain,
             renew = false,
@@ -669,7 +772,30 @@ function AUTOSSL.ssl_certificate()
           elseif AUTOSSL.config.blocking then
             -- in blocking mode we can try to use the cert right away
             certs_cache[typ]:delete(domain)
-            get_cert_inline(i, typ)
+            local certkey, err = get_certkey_parsed(domain, typ)
+            if err then
+              log(ngx_ERR, "can't read key and cert from storage ", err)
+            elseif certkey == null then
+              log(ngx_DEBUG, "negative cached domain cert")
+            elseif certkey then
+              if chains_set_count == 0 then
+                ssl.clear_certs()
+              end
+              chains_set_count = chains_set_count + 1
+              -- Find the global index for this type
+              local global_index = nil
+              for j, global_typ in ipairs(domain_key_types) do
+                if global_typ == typ then
+                  global_index = j
+                  break
+                end
+              end
+              chains_set[global_index] = true
+
+              log(ngx_DEBUG, "set ", typ, " key for domain ", domain)
+              ssl.set_cert(certkey.cert)
+              ssl.set_priv_key(certkey.pkey)
+            end
           end
         end
       end
@@ -727,6 +853,11 @@ function AUTOSSL.get_certkey(domain, typ)
   end
 
   return get_certkey(domain, typ or "rsa")
+end
+
+-- test helper function to expose get_domain_key_types for unit testing
+function AUTOSSL._test_get_domain_key_types(domain)
+  return get_domain_key_types(domain)
 end
 
 return AUTOSSL

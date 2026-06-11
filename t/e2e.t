@@ -85,6 +85,75 @@ sub ::make_http_config{
     }
 };
 
+sub ::make_http_config_with_callback{
+    my ($key_types, $key_path, $challenges, $callback_code) = @_;
+    return qq{
+        lua_package_path "$pwd/lib/?.lua;$pwd/lib/?/init.lua;$pwd/../lib/?.lua;$pwd/../lib/?/init.lua;;";
+        lua_package_cpath "$pwd/luajit/lib/?.so;/usr/local/openresty-debug/lualib/?.so;/usr/local/openresty/lualib/?.so;;";
+
+        lua_shared_dict acme 16m;
+
+        init_by_lua_block {
+            local old_tcp = ngx.socket.tcp
+            local old_tcp_connect
+
+            local function strip_nils(first, second)
+                if second then
+                    return first, second
+                elseif first then
+                    return first
+                end
+            end
+
+            local function resolve_connect(f, sock, host, port, opts)
+                if host == "localhost" then
+                    host = "127.0.0.1"
+                end
+
+                return f(sock, host, strip_nils(port, opts))
+            end
+
+            local function tcp_resolve_connect(sock, host, port, opts)
+                return resolve_connect(old_tcp_connect, sock, host, port, opts)
+            end
+
+            _G.ngx.socket.tcp = function(...)
+                local sock = old_tcp(...)
+
+                if not old_tcp_connect then
+                    old_tcp_connect = sock.connect
+                end
+
+                sock.connect = tcp_resolve_connect
+
+                return sock
+            end
+
+            require("resty.acme.autossl").init({
+                tos_accepted = true,
+                domain_key_types = { $key_types },
+                account_key_path = "$key_path",
+                account_email = "test\@example.com",
+                domain_whitelist = setmetatable({}, { __index = function()
+                    return true
+                end}),
+                enabled_challenge_handlers = { $challenges },
+                storage_adapter = "shm",
+                challenge_start_delay = 3,
+                blocking = false,
+                $callback_code
+            }, {
+                api_uri = "https://localhost:14000/dir",
+            })
+        }
+        init_worker_by_lua_block {
+            require("resty.acme.autossl").init_worker()
+        }
+
+        lua_ssl_trusted_certificate ../../fixtures/pebble.minica.pem;
+    }
+};
+
 sub ::make_main_config{
     my ($key_types, $key_path, $challenges) = @_;
     my $common_config = make_http_config($key_types, $key_path, $challenges, "acme_stream", "file");
@@ -337,3 +406,125 @@ set ecc key
 [warn]
 [error]
 
+
+=== TEST 5: domain_key_types_for_domain callback - generates only ECC for specific domain
+--- main_config
+    thread_pool create_pkey threads=1;
+--- http_config eval: ::make_http_config_with_callback("'rsa', 'ecc'", "/tmp/account.key", "'http-01'", "domain_key_types_for_domain = function(domain) if string.match(domain, 'test5') then return { 'ecc' } end return nil end,")
+--- config
+    listen 5002;
+    listen 5001 ssl;
+    ssl_certificate /tmp/default.pem;
+    ssl_certificate_key /tmp/default.key;
+
+    ssl_certificate_by_lua_block {
+        require("resty.acme.autossl").ssl_certificate()
+    }
+
+    location /.well-known {
+        content_by_lua_block {
+            require("resty.acme.autossl").serve_http_challenge()
+        }
+    }
+
+    location ~ /t/(.+) {
+        set $domain $1;
+        content_by_lua_block {
+            local ngx_pipe = require "ngx.pipe"
+            local opts = {
+                merge_stderr = true,
+                buffer_size = 256000,
+            }
+            
+            -- Try to connect with RSA cipher (should eventually work even though we only generate ECC)
+            for i=0,15,1 do
+                local proc = ngx_pipe.spawn({'bash', '-c', "echo q |openssl s_client -connect 127.0.0.1:5001 -servername ".. ngx.var.domain .. " 2>&1 | head -30"}, opts)
+                local data, _ = proc:stdout_read_all()
+                if ngx.re.match(data, "Verify return code") then
+                    break
+                end
+                ngx.sleep(2)
+            end
+            
+            -- Give storage time to save
+            ngx.sleep(2)
+            
+            -- Check what was actually generated
+            local storage = require("resty.acme.autossl").storage
+            local rsa_cert, _ = storage:get("domain:rsa:" .. ngx.var.domain)
+            local ecc_cert, _ = storage:get("domain:ecc:" .. ngx.var.domain)
+            
+            ngx.say("RSA cert generated: ", rsa_cert and "yes" or "no")
+            ngx.say("ECC cert generated: ", ecc_cert and "yes" or "no")
+        }
+    }
+--- request eval
+"GET /t/e2e-test5-$ENV{'tm'}"
+--- response_body
+RSA cert generated: no
+ECC cert generated: yes
+--- error_log
+set ecc key
+--- no_error_log
+set rsa key
+
+
+=== TEST 6: domain_key_types_for_domain callback returns nil - generates both RSA and ECC
+--- main_config
+    thread_pool create_pkey threads=1;
+--- http_config eval: ::make_http_config_with_callback("'rsa', 'ecc'", "/tmp/account.key", "'http-01'", "domain_key_types_for_domain = function(domain) return nil end,")
+--- config
+    listen 5002;
+    listen 5001 ssl;
+    ssl_certificate /tmp/default.pem;
+    ssl_certificate_key /tmp/default.key;
+
+    ssl_certificate_by_lua_block {
+        require("resty.acme.autossl").ssl_certificate()
+    }
+
+    location /.well-known {
+        content_by_lua_block {
+            require("resty.acme.autossl").serve_http_challenge()
+        }
+    }
+
+    location ~ /t/(.+) {
+        set $domain $1;
+        content_by_lua_block {
+            local ngx_pipe = require "ngx.pipe"
+            local opts = {
+                merge_stderr = true,
+                buffer_size = 256000,
+            }
+            
+            -- Try to connect to trigger cert generation
+            for i=0,15,1 do
+                local proc = ngx_pipe.spawn({'bash', '-c', "echo q |openssl s_client -connect 127.0.0.1:5001 -servername ".. ngx.var.domain .. " 2>&1 | head -30"}, opts)
+                local data, _ = proc:stdout_read_all()
+                if ngx.re.match(data, "Verify return code") then
+                    break
+                end
+                ngx.sleep(2)
+            end
+            
+            -- Give storage time to save
+            ngx.sleep(2)
+            
+            -- Check what was actually generated
+            local storage = require("resty.acme.autossl").storage
+            local rsa_cert, _ = storage:get("domain:rsa:" .. ngx.var.domain)
+            local ecc_cert, _ = storage:get("domain:ecc:" .. ngx.var.domain)
+            
+            ngx.say("RSA cert generated: ", rsa_cert and "yes" or "no")
+            ngx.say("ECC cert generated: ", ecc_cert and "yes" or "no")
+        }
+    }
+--- request eval
+"GET /t/e2e-test6-$ENV{'tm'}"
+--- response_body
+RSA cert generated: yes
+ECC cert generated: yes
+--- error_log
+set ecc key
+set rsa key

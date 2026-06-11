@@ -91,6 +91,13 @@ http {
             -- staging = true,
             -- uncomment following to enable RSA + ECC double cert
             -- domain_key_types = { 'rsa', 'ecc' },
+            -- uncomment following to customize key types per domain
+            -- domain_key_types_for_domain = function(domain)
+            --     if string.match(domain, "ecc-only%.example%.com$") then
+            --         return { 'ecc' }
+            --     end
+            --     return nil  -- use global domain_key_types
+            -- end,
             -- uncomment following to enable tls-alpn-01 challenge
             -- enabled_challenge_handlers = { 'http-01', 'tls-alpn-01' },
             account_key_path = "/etc/openresty/account.key",
@@ -195,6 +202,31 @@ end}),
 
 `domain_whitelist_callback` function is provided with a second argument,
 which indicates whether the certificate is about to be served on incoming HTTP request (false) or new certificate is about to be requested (true). This allows to use cached values on hot path (serving requests) while fetching fresh data from storage for new certificates. One may also implement different logic, e.g. do extra checks before requesting new cert.
+
+### Customize key types per domain
+
+The `domain_key_types_for_domain` callback allows you to specify different certificate types for different domains. This is useful when you want some domains to use only ECC certificates (smaller, faster) while others use RSA or both.
+
+```lua
+domain_key_types_for_domain = function(domain)
+    -- Use only ECC for specific domains
+    if string.match(domain, "^mobile%.") or string.match(domain, "^api%.") then
+        return { 'ecc' }
+    end
+    -- Use both RSA and ECC for main domain
+    if domain == "example.com" then
+        return { 'rsa', 'ecc' }
+    end
+    -- Return nil to use global domain_key_types setting
+    return nil
+end
+```
+
+The function receives the domain name as a parameter and should return:
+- A table with key types (e.g., `{ 'ecc' }`, `{ 'rsa' }`, or `{ 'rsa', 'ecc' }`) to override for this domain
+- `nil` to use the global `domain_key_types` setting
+
+The returned types must be a subset of the global `domain_key_types`. Invalid returns will be logged and fall back to the global setting.
 
 ### Define failure cooloff period
 
@@ -435,6 +467,9 @@ default_config = {
   -- the private key algorithm to use, can be one or both of
   -- 'rsa' and 'ecc'
   domain_key_types = { 'rsa' },
+  -- a function to customize key types for specific domains
+  -- function receives domain name and should return a table of key types or nil
+  domain_key_types_for_domain = nil,
   -- restrict registering new cert only with domain defined in this table
   domain_whitelist = nil,
   -- restrict registering new cert only with domain checked by this function
